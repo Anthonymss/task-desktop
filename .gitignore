@@ -1,0 +1,31 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# PyInstaller / Build
+build/
+dist/
+CronVault_Release/
+
+# Bases de Datos y Logs (Archivos generados en tiempo de ejecución)
+jobs.db
+jobs.db-shm
+jobs.db-wal
+logs/
+*.log
+
+# Variables de entorno y Entornos Virtuales
+.env
+venv/
+env/
+.venv/
+env.bak/
+venv.bak/
+
+# Archivos de SO y Editores
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
