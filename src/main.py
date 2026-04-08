@@ -24,27 +24,107 @@ def get_resource_path(filename):
         if os.path.exists(path):
             return path
     return filename 
-class JobWorker(QThread):
-    finished_signal = Signal()
-
-    def __init__(self, command, job_id, timeout_mins, retries):
-        super().__init__()
-        self.command = command
+class LogDialog(QDialog):
+    def __init__(self, job_id, job_name, parent=None):
+        super().__init__(parent)
         self.job_id = job_id
-        self.timeout_mins = timeout_mins
-        self.retries = retries
+        self.setWindowTitle(f"Monitor de Log: {job_name}")
+        self.resize(800, 500)
+        
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        
+        self.log_view = QTextEdit()
+        self.log_view.setReadOnly(True)
+        self.log_view.setFont(QFont("Consolas", 10) if sys.platform == "win32" else QFont("Monospace", 10))
+        self.log_view.setStyleSheet(f"""
+            QTextEdit {{
+                background-color: {C['log_bg']};
+                color: {C['log_text']};
+                border-radius: 8px;
+                padding: 10px;
+            }}
+        """)
+        layout.addWidget(self.log_view)
+        
+        btn_layout = QHBoxLayout()
+        self.status_lbl = QLabel("Buscando archivo de log...")
+        self.status_lbl.setStyleSheet(f"color: {C['text_secondary']}; font-size: 11px;")
+        btn_layout.addWidget(self.status_lbl)
+        btn_layout.addStretch()
+        
+        btn_close = QPushButton("Cerrar")
+        btn_close.setFixedHeight(32)
+        btn_close.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {C['bg']};
+                border: 1.5px solid {C['border']};
+                border-radius: 6px;
+                padding: 0 15px;
+            }}
+            QPushButton:hover {{ background-color: {C['border']}; }}
+        """)
+        btn_close.clicked.connect(self.close)
+        btn_layout.addWidget(btn_close)
+        layout.addLayout(btn_layout)
+        
+        self.log_file = self._find_latest_log()
+        self.last_pos = 0
+        
+        self.timer = QTimer(self)
+        self.timer.timeout.connect(self._update_logs)
+        self.timer.start(1000)
+        
+        if self.log_file:
+            self._update_logs()
+        else:
+            self.log_view.append("No se encontró ningún archivo de log para este Job.\nEjecútalo primero para generar logs.")
 
-    def run(self):
-        core.run_command(self.command, self.job_id, self.timeout_mins, self.retries)
-        self.finished_signal.emit()
+    def _find_latest_log(self):
+        log_dir = "logs"
+        if not os.path.exists(log_dir):
+            return None
+        
+        prefix = f"job_{self.job_id}_"
+        logs = [os.path.join(log_dir, f) for f in os.listdir(log_dir) if f.startswith(prefix) and f.endswith(".log")]
+        if not logs:
+            return None
+        
+        return max(logs, key=os.path.getmtime)
+
+    def _update_logs(self):
+        if not self.log_file:
+            self.log_file = self._find_latest_log()
+            if not self.log_file: return
+            self.log_view.clear()
+            self.status_lbl.setText(f"Monitoreando: {os.path.basename(self.log_file)}")
+
+        if not os.path.exists(self.log_file):
+            return
+
+        try:
+            curr_size = os.path.getsize(self.log_file)
+            if curr_size > self.last_pos:
+                with open(self.log_file, "r", encoding="utf-8", errors="replace") as f:
+                    f.seek(self.last_pos)
+                    new_data = f.read()
+                    if new_data:
+                        self.log_view.append(new_data.strip())
+                    self.last_pos = f.tell()
+                self.log_view.verticalScrollBar().setValue(self.log_view.verticalScrollBar().maximum())
+            
+            self.status_lbl.setText(f"Monitoreando: {os.path.basename(self.log_file)} ({os.path.getsize(self.log_file)//1024} KB)")
+        except Exception as e:
+            self.status_lbl.setText(f"Error leyendo log: {str(e)}")
+
 class App(QWidget):
-    COLS = ["ID", "Nombre", "Comando", "Labels", "Programación", "Estado", "Última ejecución"]
+    COLS = ["ID", "Nombre", "Comando", "Labels", "Programación", "Estado", "Última ejecución", "Acciones"]
 
     def __init__(self):
         super().__init__()
         self.setWindowTitle("CronVault")
-        self.resize(1180, 740)
-        self.setMinimumSize(920, 600)
+        self.resize(1240, 740)
+        self.setMinimumSize(1000, 600)
         self.setStyleSheet(f"QWidget {{ background-color: {C['bg']}; }}")
 
         root = QVBoxLayout(self)
@@ -108,14 +188,13 @@ class App(QWidget):
         toolbar.setSpacing(8)
         self.btn_add     = self._mk_btn("＋  Nuevo job",      kind="primary")
         self.btn_edit    = self._mk_btn("✏  Editar")
-        self.btn_run     = self._mk_btn("▶  Ejecutar ahora")
         self.btn_clrlogs = self._mk_btn("🧹  Limpiar logs")
         self.btn_delete  = self._mk_btn("✕  Eliminar",         kind="danger")
-        for btn in (self.btn_add, self.btn_edit, self.btn_run,
-                    self.btn_clrlogs, self.btn_delete):
+        for btn in (self.btn_add, self.btn_edit, self.btn_clrlogs, self.btn_delete):
             toolbar.addWidget(btn)
         toolbar.addStretch()
         b_lay.addLayout(toolbar)
+
 
         self.table = QTableWidget()
         self.table.setColumnCount(len(self.COLS))
@@ -227,7 +306,6 @@ class App(QWidget):
         self.btn_add.clicked.connect(self.add_job)
         self.btn_edit.clicked.connect(self.edit_job)
         self.btn_delete.clicked.connect(self.delete_job)
-        self.btn_run.clicked.connect(self.run_job)
         self.btn_clrlogs.clicked.connect(self.clear_logs)
         self.table.itemSelectionChanged.connect(self.load_logs)
         self.table.doubleClicked.connect(self.edit_job)
@@ -239,8 +317,6 @@ class App(QWidget):
         self._timer.setInterval(10_000)
         self._timer.timeout.connect(self._auto_refresh)
         self._timer.start()
-
-        self.workers = []
 
         self.load_jobs()
         core.sync_jobs()
@@ -387,6 +463,9 @@ class App(QWidget):
             elif status == "RUNNING":
                 st_item.setForeground(QColor(C["warn"]))
                 st_item.setBackground(QColor(C["warn_light"]))
+            elif status == "DETENIDO":
+                st_item.setForeground(QColor(C["danger"]))
+                st_item.setBackground(QColor(C["surface2"]))
             else:
                 st_item.setForeground(QColor(C["text_muted"]))
             self.table.setItem(i, 5, st_item)
@@ -394,6 +473,61 @@ class App(QWidget):
             lr_item = QTableWidgetItem(last_run)
             lr_item.setForeground(QColor(C["text_muted"]))
             self.table.setItem(i, 6, lr_item)
+
+            container = QWidget()
+            lay = QHBoxLayout(container)
+            lay.setContentsMargins(5, 0, 5, 0)
+            lay.setSpacing(6)
+            lay.setAlignment(Qt.AlignCenter)
+
+            style_btn = f"""
+                QPushButton {{
+                    background-color: {C['bg']}; color: {C['accent']};
+                    border: 1px solid {C['border']}; border-radius: 4px; font-size: 14px;
+                }}
+                QPushButton:hover {{ background-color: {C['accent_light']}; border-color: {C['accent']}; }}
+            """
+
+            jid, jname = job["id"], job["name"]
+            
+            btn_play = QPushButton(" ▶ ")
+            btn_play.setToolTip("Inicia el job inmediatamente en segundo plano")
+            btn_play.setFixedSize(30, 26)
+            btn_play.setStyleSheet(style_btn)
+            btn_play.clicked.connect(lambda checked=False, id=jid, name=jname: self._trigger_job_action(id, name, "start"))
+            if status == "RUNNING":
+                btn_play.setEnabled(False)
+                btn_play.setToolTip("Ya está en ejecución")
+            
+            btn_stop = QPushButton(" ⏹ ")
+            btn_stop.setToolTip("Detiene el job si está en ejecución")
+            btn_stop.setFixedSize(30, 26)
+            btn_stop.setStyleSheet(f"""
+                QPushButton {{ background-color: {C['bg']}; color: {C['danger']}; border: 1px solid {C['border']}; border-radius: 4px; font-size: 14px; }}
+                QPushButton:hover {{ background-color: {C['danger_light']}; border-color: {C['danger']}; }}
+                QPushButton:disabled {{ color: {C['border']}; border-color: {C['border']}; }}
+            """)
+            btn_stop.clicked.connect(lambda checked=False, id=jid, name=jname: self._trigger_job_action(id, name, "stop"))
+            if status != "RUNNING":
+                btn_stop.setEnabled(False)
+
+            btn_restart = QPushButton(" 🔃 ")
+            btn_restart.setToolTip("Detiene y reinicia el job")
+            btn_restart.setFixedSize(30, 26)
+            btn_restart.setStyleSheet(style_btn)
+            btn_restart.clicked.connect(lambda checked=False, id=jid, name=jname: self._trigger_job_action(id, name, "restart"))
+            
+            btn_log = QPushButton(" 📄 ")
+            btn_log.setToolTip("Ver log en tiempo real")
+            btn_log.setFixedSize(30, 26)
+            btn_log.setStyleSheet(style_btn)
+            btn_log.clicked.connect(lambda checked=False, id=jid, name=jname: self.show_log_viewer(id, name))
+            
+            lay.addWidget(btn_play)
+            lay.addWidget(btn_stop)
+            lay.addWidget(btn_restart)
+            lay.addWidget(btn_log)
+            self.table.setCellWidget(i, 7, container)
 
         self.card_total.set_value(str(len(jobs)))
         self.card_ok.set_value(str(total_ok))
@@ -403,6 +537,10 @@ class App(QWidget):
 
         if current_id is not None:
             self._select_job_by_id(current_id)
+
+    def show_log_viewer(self, job_id, job_name):
+        dialog = LogDialog(job_id, job_name, self)
+        dialog.show()
 
     def _auto_refresh(self):
         current_id = self._get_selected_id()
@@ -432,7 +570,7 @@ class App(QWidget):
                 (name, command, labels, day, month, day_of_week, hour, minute, timeout_mins, max_instances, retries),
             )
             self.load_jobs()
-            core.sync_jobs()
+            self.show_toast("✅ Job creado. El servicio acatará la orden en breve (máx. 15s)")
 
     def edit_job(self):
         job_id = self._get_selected_id()
@@ -450,7 +588,7 @@ class App(QWidget):
                 (name, command, labels, day, month, day_of_week, hour, minute, timeout_mins, max_instances, retries, job_id),
             )
             self.load_jobs()
-            core.sync_jobs()
+            self.show_toast("✅ Job actualizado. El servicio acatará la orden en breve (máx. 15s)")
 
     def delete_job(self):
         job_id = self._get_selected_id()
@@ -471,31 +609,36 @@ class App(QWidget):
         self.log_job_name.setText("")
         self.load_jobs()
 
-    def run_job(self):
-        job_id = self._get_selected_id()
-        if job_id is None:
-            return
-        rows = core.db_read("SELECT command, timeout_mins, retries FROM jobs WHERE id=?", (job_id,))
-        if not rows:
-            return
+    def _trigger_job_action(self, job_id, job_name, action):
+        if action == "start":
+            core.db_write("UPDATE jobs SET trigger_start = 1 WHERE id=?", (job_id,))
+            self.show_toast(f"▶ {job_name} se iniciará en breve en 2do plano.")
+        elif action == "stop":
+            core.db_write("UPDATE jobs SET trigger_stop = 1 WHERE id=?", (job_id,))
+            self.show_toast(f"⏹ Deteniendo {job_name} si estaba en ejecución.")
+        elif action == "restart":
+            core.db_write("UPDATE jobs SET trigger_stop = 1, trigger_start = 1 WHERE id=?", (job_id,))
+            self.show_toast(f"🔃 {job_name} deteniéndose e iniciándose de nuevo...")
         
-        self.btn_run.setText("⏳  Ejecutando…")
-        self.btn_run.setEnabled(False)
-        
-        worker = JobWorker(rows[0]["command"], job_id, rows[0]["timeout_mins"], rows[0]["retries"])
-        self.workers.append(worker)
-        
-        worker.finished_signal.connect(self._on_job_finished)
-        worker.finished.connect(lambda: self.workers.remove(worker) if worker in self.workers else None)
-        worker.finished.connect(worker.deleteLater)
-        
-        worker.start()
+        QTimer.singleShot(2000, self.load_jobs)
 
-    def _on_job_finished(self):
-        self.btn_run.setText("▶  Ejecutar ahora")
-        self.btn_run.setEnabled(True)
-        self.load_jobs()
-        self.load_logs()
+    def show_toast(self, message):
+        toast = QLabel(message, self)
+        toast.setAlignment(Qt.AlignCenter)
+        toast.setStyleSheet(f"""
+            background-color: {C['surface2']};
+            color: {C['text']};
+            border: 1px solid {C['border']};
+            border-radius: 8px;
+            padding: 10px 20px;
+            font-size: 13px;
+        """)
+        toast.adjustSize()
+        toast.move((self.width() - toast.width()) // 2, 80)
+        toast.show()
+        toast.raise_()
+        
+        QTimer.singleShot(3000, toast.deleteLater)
 
     def clear_logs(self):
         job_id = self._get_selected_id()
@@ -630,25 +773,22 @@ class App(QWidget):
 if __name__ == "__main__":
     core.init_db()
 
-    if core.IS_SERVICE:
-        core.run_service()
-    else:
-        app = QApplication(sys.argv)
-        app.setWindowIcon(QIcon(get_resource_path("cronvault.ico")))
+    app = QApplication(sys.argv)
+    app.setWindowIcon(QIcon(get_resource_path("cronvault.ico")))
 
-        font = QFont("Segoe UI", 10)
-        app.setFont(font)
+    font = QFont("Segoe UI", 10)
+    app.setFont(font)
 
-        palette = QPalette()
-        palette.setColor(QPalette.Window,          QColor(C["bg"]))
-        palette.setColor(QPalette.WindowText,      QColor(C["text"]))
-        palette.setColor(QPalette.Base,            QColor(C["surface"]))
-        palette.setColor(QPalette.AlternateBase,   QColor(C["surface2"]))
-        palette.setColor(QPalette.Highlight,       QColor(C["accent"]))
-        palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
-        app.setPalette(palette)
+    palette = QPalette()
+    palette.setColor(QPalette.Window,          QColor(C["bg"]))
+    palette.setColor(QPalette.WindowText,      QColor(C["text"]))
+    palette.setColor(QPalette.Base,            QColor(C["surface"]))
+    palette.setColor(QPalette.AlternateBase,   QColor(C["surface2"]))
+    palette.setColor(QPalette.Highlight,       QColor(C["accent"]))
+    palette.setColor(QPalette.HighlightedText, QColor("#ffffff"))
+    app.setPalette(palette)
 
-        window = App()
-        window.setWindowIcon(QIcon(get_resource_path("cronvault.ico")))
-        window.show()
-        sys.exit(app.exec())
+    window = App()
+    window.setWindowIcon(QIcon(get_resource_path("cronvault.ico")))
+    window.show()
+    sys.exit(app.exec())

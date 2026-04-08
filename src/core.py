@@ -56,7 +56,9 @@ def init_db():
             ("day", "TEXT NOT NULL DEFAULT '*'"),
             ("month", "TEXT NOT NULL DEFAULT '*'"),
             ("day_of_week", "TEXT NOT NULL DEFAULT '*'"),
-            ("retries", "INTEGER NOT NULL DEFAULT 0")
+            ("retries", "INTEGER NOT NULL DEFAULT 0"),
+            ("trigger_start", "INTEGER NOT NULL DEFAULT 0"),
+            ("trigger_stop", "INTEGER NOT NULL DEFAULT 0")
         ]
         for col_name, col_def in cols_to_add:
             try:
@@ -75,6 +77,9 @@ def db_read(sql: str, params: tuple = ()):
     return get_conn().execute(sql, params).fetchall()
 
 def run_command(command: str, job_id: int | None = None, timeout_mins: int = 20, retries: int = 0):
+    if job_id is not None and job_id in _running_processes:
+        return "ALREADY_RUNNING"
+        
     log_id = None
     if job_id is not None:
         conn = get_conn()
@@ -87,68 +92,120 @@ def run_command(command: str, job_id: int | None = None, timeout_mins: int = 20,
             conn.commit()
 
     timeout_secs = timeout_mins * 60
-    final_out, final_err = "", ""
-    status = "FAIL"
-
-    for attempt in range(retries + 1):
-        try:
-            result = subprocess.run(
-                command, shell=True, capture_output=True, text=True, timeout=timeout_secs
-            )
-            status = "OK" if result.returncode == 0 else "FAIL"
-            out, err = result.stdout, result.stderr
-        except subprocess.TimeoutExpired:
-            status, out, err = "FAIL", "", f"Timeout: proceso excedió {timeout_mins} min."
-        except Exception as e:
-            status, out, err = "FAIL", "", str(e)
-
-        if status != "OK" and attempt < retries:
-            final_out += out
-            final_err += f"{err}\n\n[!] Intento {attempt + 1}/{retries + 1} fallido. Reintentando en 30s...\n"
-            time.sleep(30)
-        else:
-            final_out += out
-            final_err += err
-            break 
-
-    # Save full logs to file
+    start_time = time.time()
+    
+    log_file_path = None
+    log_f = None
     if job_id is not None:
         log_dir = "logs"
         if not os.path.exists(log_dir): os.makedirs(log_dir)
         ts_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-        suffix = f"_{log_id}" if log_id else ""
-        log_filename = f"job_{job_id}{suffix}_{ts_str}.log"
+        log_filename = f"job_{job_id}_{log_id}_{ts_str}.log"
         log_file_path = os.path.join(log_dir, log_filename)
-        
-        with open(log_file_path, "w", encoding="utf-8") as f:
-            f.write(f"--- CRONVAULT FULL LOG ---\n")
-            f.write(f"Timestamp: {datetime.now().isoformat()}\n")
-            f.write(f"Job ID: {job_id}\n")
-            f.write(f"Command: {command}\n")
-            f.write(f"Status: {status}\n")
-            f.write(f"--------------------------\n\n")
-            f.write(f"STDOUT:\n{final_out}\n\n")
-            f.write(f"STDERR:\n{final_err}\n")
+        log_f = open(log_file_path, "w", encoding="utf-8", errors="replace")
+        log_f.write(f"--- CRONVAULT REAL-TIME LOG ---\n")
+        log_f.write(f"Command: {command}\n")
+        log_f.write(f"Start: {datetime.now().isoformat()}\n")
+        log_f.write(f"Timeout: {timeout_mins} min.\n")
+        log_f.write(f"-------------------------------\n\n")
+        log_f.flush()
 
-    # DB records summary (truncated)
-    db_out = final_out[:8000]
-    db_err = final_err[:8000]
+    status = "FAIL"
+    full_output = []
+
+    for attempt in range(retries + 1):
+        if attempt > 0:
+            msg = f"\n[!] Reintento {attempt}/{retries} iniciándose...\n"
+            if log_f: log_f.write(msg); log_f.flush()
+            full_output.append(msg)
+
+        try:
+            process = subprocess.Popen(
+                command, 
+                shell=True, 
+                stdout=subprocess.PIPE, 
+                stderr=subprocess.STDOUT, 
+                stdin=subprocess.DEVNULL,
+                text=True,
+                encoding='utf-8', 
+                errors='replace',
+                bufsize=1
+            )
+            
+            if job_id is not None:
+                _running_processes[job_id] = process
+
+            last_db_update = time.time()
+            while True:
+                line = process.stdout.readline()
+                if not line and process.poll() is not None:
+                    break
+                if line:
+                    ts = datetime.now().strftime("%H:%M:%S")
+                    formatted_line = f"[{ts}] {line}"
+                    if log_f:
+                        log_f.write(formatted_line)
+                        log_f.flush()
+                    full_output.append(line)
+                
+                if time.time() - last_db_update > 10:
+                    if log_id is not None:
+                        partial_text = "".join(full_output)[-16000:]
+                        conn = get_conn()
+                        with _db_lock:
+                            conn.execute("UPDATE logs SET output=? WHERE id=?", (partial_text, log_id))
+                            conn.commit()
+                    last_db_update = time.time()
+                
+                if time.time() - start_time > timeout_secs:
+                    process.terminate()
+                    err_msg = f"\n[TIMEOUT] Proceso detenido tras {timeout_mins} minutos.\n"
+                    if log_f: log_f.write(err_msg); log_f.flush()
+                    full_output.append(err_msg)
+                    break
+
+            return_code = process.poll()
+            status = "OK" if return_code == 0 else "FAIL"
+            
+            if job_id in _manual_stops:
+                status = "DETENIDO"
+                _manual_stops.discard(job_id)
+                err_msg = f"\n[STOP] Proceso detenido manualmente por el usuario.\n"
+                if log_f: log_f.write(err_msg); log_f.flush()
+                full_output.append(err_msg)
+
+            if job_id is not None:
+                _running_processes.pop(job_id, None)
+            
+            if status == "OK" or status == "DETENIDO":
+                break
+            elif attempt < retries:
+                time.sleep(10)
+
+        except Exception as e:
+            err_msg = f"\nError en ejecución: {str(e)}\n"
+            if log_f: log_f.write(err_msg); log_f.flush()
+            full_output.append(err_msg)
+            status = "FAIL"
+
+    if log_f:
+        log_f.write(f"\n-------------------------------\n")
+        log_f.write(f"Finalizado: {datetime.now().isoformat()}\n")
+        log_f.write(f"Estado Final: {status}\n")
+        log_f.close()
+
+    combined_text = "".join(full_output)
+    db_summary = combined_text[:16000]
 
     if log_id is not None:
         conn = get_conn()
         with _db_lock:
             conn.execute(
-                "UPDATE logs SET output=?, error=?, status=? WHERE id=?",
-                (db_out, db_err, status, log_id),
+                "UPDATE logs SET output=?, status=? WHERE id=?",
+                (db_summary, status, log_id),
             )
             conn.commit()
-
         _rotate_logs(job_id)
-    elif job_id is not None:
-        db_write(
-            "INSERT INTO logs (job_id, output, error, status, created_at) VALUES (?, ?, ?, ?, ?)",
-            (job_id, db_out, db_err, status, datetime.now().isoformat()),
-        )
 
     return status
 
@@ -166,6 +223,22 @@ def _rotate_logs(job_id: int):
                 )
             """, (job_id, excess))
             conn.commit()
+            
+    MAX_PHYSICAL_LOGS = 10
+    log_dir = "logs"
+    if os.path.exists(log_dir):
+        try:
+            prefix = f"job_{job_id}_"
+            log_files = [os.path.join(log_dir, f) for f in os.listdir(log_dir) if f.startswith(prefix) and f.endswith(".log")]
+            if len(log_files) > MAX_PHYSICAL_LOGS:
+                log_files.sort(key=os.path.getmtime)
+                for file_path in log_files[:-MAX_PHYSICAL_LOGS]:
+                    try:
+                        os.remove(file_path)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
 
 scheduler = BackgroundScheduler(daemon=True)
 _scheduled_ids: set = set()
@@ -185,7 +258,6 @@ def sync_jobs():
         
         for r in rows:
             sid = str(r["id"])
-            # Create a simple config tuple to check for changes
             config = (
                 r["command"], r["day"], r["month"], r["day_of_week"],
                 r["hour"], r["minute"], r["timeout_mins"],
@@ -193,7 +265,7 @@ def sync_jobs():
             )
             
             if sid in _job_cache and _job_cache[sid] == config:
-                continue # No changes, skip add_job
+                continue
 
             scheduler.add_job(
                 run_command, "cron",
@@ -223,6 +295,35 @@ def shutdown_scheduler():
 
 atexit.register(shutdown_scheduler)
 
+_running_processes = {}
+_manual_stops = set()
+
+def check_triggers():
+    rows = db_read("SELECT id, trigger_start, trigger_stop FROM jobs WHERE trigger_start = 1 OR trigger_stop = 1")
+    for r in rows:
+        job_id = r["id"]
+        
+        if r["trigger_stop"]:
+            db_write("UPDATE jobs SET trigger_stop = 0 WHERE id=?", (job_id,))
+            if job_id in _running_processes:
+                _manual_stops.add(job_id)
+                try:
+                    _running_processes[job_id].terminate()
+                except Exception:
+                    pass
+        
+        if r["trigger_start"]:
+            db_write("UPDATE jobs SET trigger_start = 0 WHERE id=?", (job_id,))
+            if job_id in _running_processes:
+                continue
+                
+            job_rows = db_read("SELECT command, timeout_mins, retries FROM jobs WHERE id=?", (job_id,))
+            if job_rows:
+                cmd = job_rows[0]["command"]
+                tmo = job_rows[0]["timeout_mins"]
+                ret = job_rows[0]["retries"]
+                threading.Thread(target=run_command, args=(cmd, job_id, tmo, ret), daemon=True).start()
+
 def run_service():
     init_db()
     scheduler.start()
@@ -230,14 +331,15 @@ def run_service():
     with open(log_file, "a") as f:
         f.write(f"[{datetime.now().isoformat()}] CronVault service started\n")
     
+    last_sync = 0
     try:
         while True:
-            with open(log_file, "a") as f:
-                f.write(f"[{datetime.now().isoformat()}] Syncing jobs...\n")
-            sync_jobs()
-            with open(log_file, "a") as f:
-                f.write(f"[{datetime.now().isoformat()}] Jobs synced. Next sync in 30s\n")
-            time.sleep(30)
+            if time.time() - last_sync >= 15:
+                sync_jobs()
+                last_sync = time.time()
+                
+            check_triggers()
+            time.sleep(3)
     except KeyboardInterrupt:
         with open(log_file, "a") as f:
             f.write(f"[{datetime.now().isoformat()}] Service shutting down...\n")

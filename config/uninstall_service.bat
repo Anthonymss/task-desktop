@@ -1,23 +1,50 @@
 @echo off
 setlocal enabledelayedexpansion
 
+:: Configuration
 set INSTALL_DIR=%ProgramFiles%\CronVault
-set WINSW_BIN=%INSTALL_DIR%\winsw.exe
-set SERVICE_XML=CronVault.xml
+set WINSW_EXE_NAME=CronVaultServiceWin.exe
+set SHORTCUT_PATH=%USERPROFILE%\Desktop\CronVault.lnk
 
-if not exist "%WINSW_BIN%" (
-  echo ERROR: No se encuentra winsw.exe en %INSTALL_DIR%.
-  echo Asegurate de haber instalado el servicio primero.
-  pause
-  exit /b 1
+:: Elevation check
+powershell -NoProfile -Command "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) { exit 1 }"
+if errorlevel 1 (
+    echo [ERROR] Por favor, ejecuta este script como ADMINISTRADOR.
+    pause
+    exit /b 1
 )
 
-pushd "%INSTALL_DIR%"
+echo ====================================================
+echo   CronVault - Desinstalador de Servicio
+echo ====================================================
+echo.
 
-"%WINSW_BIN%" stop "%SERVICE_XML%" >nul 2>&1
-"%WINSW_BIN%" uninstall "%SERVICE_XML%" >nul 2>&1
+echo [+] Deteniendo servicio nativo de Windows...
+sc stop CronVaultService >nul 2>&1
+timeout /t 2 /nobreak >nul
 
-echo Servicio CronVault desinstalado.
+if exist "%INSTALL_DIR%\%WINSW_EXE_NAME%" (
+    pushd "%INSTALL_DIR%"
+    echo [+] Desinstalando gestor de servicio...
+    "%WINSW_EXE_NAME%" uninstall >nul 2>&1
+    popd
+) else (
+    echo [!] No se encontro el gestor WinSW, intentando desinstalacion via SC...
+    sc delete CronVaultService >nul 2>&1
+)
+
+echo [+] Limpiando procesos residuales en memoria...
+powershell -NoProfile -Command "Get-Process | Where-Object { $_.Name -like '*CronVault*' } | Stop-Process -Force -ErrorAction SilentlyContinue"
+
+:: Remove Shortcut
+if exist "%SHORTCUT_PATH%" (
+    echo [+] Eliminando acceso directo...
+    del /f /q "%SHORTCUT_PATH%"
+)
+
+echo.
+echo [V] El servicio ha sido removido con exito.
+echo [NOTA] Puedes eliminar la carpeta %INSTALL_DIR% manualmente si lo deseas.
+echo.
 pause
-popd
 endlocal

@@ -210,40 +210,40 @@ class JobDialog(QDialog):
         self.schedule.currentTextChanged.connect(self._on_schedule_changed)
 
         time_row = QHBoxLayout()
-        time_row.setSpacing(8)
+        time_row.setSpacing(15) 
         self.hour   = QSpinBox(); self.hour.setRange(0, 23);  self.hour.setSuffix(" h")
         self.minute = QSpinBox(); self.minute.setRange(0, 59); self.minute.setSuffix(" m")
         for sp in (self.hour, self.minute):
-            sp.setStyleSheet(field_style)
-            sp.setFixedWidth(80)
+            sp.setStyleSheet(field_style + "padding: 5px;")
+            sp.setFixedWidth(140)
         colon = QLabel(":")
-        colon.setStyleSheet(f"color:{C['text_secondary']};font-size:16px;background:transparent;border:none;")
+        colon.setStyleSheet(f"color:{C['text_secondary']};font-size:18px;background:transparent;border:none;")
         time_row.addWidget(self.hour)
         time_row.addWidget(colon)
         time_row.addWidget(self.minute)
         time_row.addStretch()
 
         adv_row = QHBoxLayout()
-        adv_row.setSpacing(12)
+        adv_row.setSpacing(15)
         
         self.timeout_mins = QSpinBox()
         self.timeout_mins.setRange(1, 1440)
         self.timeout_mins.setValue(20)
         self.timeout_mins.setSuffix(" min")
-        self.timeout_mins.setFixedWidth(80)
-        self.timeout_mins.setStyleSheet(field_style)
+        self.timeout_mins.setFixedWidth(130)
+        self.timeout_mins.setStyleSheet(field_style + "padding: 5px;")
         
         self.max_instances = QSpinBox()
         self.max_instances.setRange(1, 5)
         self.max_instances.setValue(1)
-        self.max_instances.setFixedWidth(60)
-        self.max_instances.setStyleSheet(field_style)
+        self.max_instances.setFixedWidth(100)
+        self.max_instances.setStyleSheet(field_style + "padding: 5px;")
         
         self.retries = QSpinBox()
         self.retries.setRange(0, 10)
         self.retries.setValue(2)
-        self.retries.setFixedWidth(60)
-        self.retries.setStyleSheet(field_style)
+        self.retries.setFixedWidth(100)
+        self.retries.setStyleSheet(field_style + "padding: 5px;")
         
         adv_row.addWidget(mk_label("Timeout:"))
         adv_row.addWidget(self.timeout_mins)
@@ -253,6 +253,9 @@ class JobDialog(QDialog):
         adv_row.addWidget(self.retries)
         adv_row.addStretch()
 
+        from datetime import datetime
+        now = datetime.now()
+        
         if job:
             self.name.setText(job["name"])
             self.command.setText(job["command"])
@@ -263,6 +266,9 @@ class JobDialog(QDialog):
             self.timeout_mins.setValue(job.get("timeout_mins", 20))
             self.max_instances.setValue(job.get("max_instances", 1))
             self.retries.setValue(job.get("retries", 2))
+        else:
+            self.hour.setValue(now.hour)
+            self.minute.setValue(now.minute)
 
         form.addRow(mk_label("Nombre *"),           self.name)
         form.addRow(mk_label("Comando *"),          cmd_row)

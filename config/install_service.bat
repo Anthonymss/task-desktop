@@ -1,78 +1,55 @@
 @echo off
-setlocal enabledelayedexpansion
+setlocal
 
-set SERVICE_NAME=CronVault
 set INSTALL_DIR=%ProgramFiles%\CronVault
-set WINSW_URL=https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe
-set WINSW_BIN=winsw.exe
-set SERVICE_XML=winsw.xml
 set SCRIPT_DIR=%~dp0
-set APP_EXE=%SCRIPT_DIR%cronvault.exe
+set UI_EXE=%~dp0CronVault.exe
+set SVC_EXE=%~dp0CronVaultService.exe
+set XML_CONF=%~dp0CronVault.xml
 
-powershell -NoProfile -Command "if (-not ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltinRole]::Administrator)) { exit 1 }"
-if errorlevel 1 (
-  echo ERROR: Ejecuta este instalador como Administrador.
-  pause
-  exit /b 1
+echo Checking permissions...
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [ERROR] Por favor ejecuta como ADMINISTRADOR
+    pause
+    exit /b 1
 )
- 
+
+echo Installing CronVault...
+
 if not exist "%INSTALL_DIR%" mkdir "%INSTALL_DIR%"
 
-echo Instalando CronVault en %INSTALL_DIR%...
+echo Cleaning up old processes...
+taskkill /F /IM CronVault.exe >nul 2>&1
+taskkill /F /IM CronVaultService.exe >nul 2>&1
+taskkill /F /IM CronVaultServiceWin.exe >nul 2>&1
 
-if not exist "%APP_EXE%" (
-  echo ERROR: No se encontro %APP_EXE%.
-  echo Ejecuta este instalador desde la carpeta de CronVault.
-  pause
-  exit /b 1
-)
-
-copy /Y "%APP_EXE%" "%INSTALL_DIR%" >nul
-if exist "%SCRIPT_DIR%cronvault.ico" copy /Y "%SCRIPT_DIR%cronvault.ico" "%INSTALL_DIR%" >nul
-copy /Y "%SCRIPT_DIR%CronVault.xml" "%INSTALL_DIR%" >nul
-copy /Y "%SCRIPT_DIR%CronVault.xml" "%INSTALL_DIR%\%SERVICE_XML%" >nul
-copy /Y "%SCRIPT_DIR%uninstall_service.bat" "%INSTALL_DIR%" >nul
+echo Copying files...
+copy /Y "%UI_EXE%" "%INSTALL_DIR%\"
+copy /Y "%SVC_EXE%" "%INSTALL_DIR%\"
+copy /Y "%XML_CONF%" "%INSTALL_DIR%\"
+copy /Y "%~dp0uninstall_service.bat" "%INSTALL_DIR%\"
+if exist "%~dp0CronVault.ico" copy /Y "%~dp0CronVault.ico" "%INSTALL_DIR%\"
 
 pushd "%INSTALL_DIR%"
 
-if not exist "%WINSW_BIN%" (
-  echo Descargando WinSW...
-  powershell -NoProfile -Command "Invoke-WebRequest -Uri '%WINSW_URL%' -OutFile '%WINSW_BIN%'"
-  if not exist "%WINSW_BIN%" (
-    echo ERROR: no se pudo descargar winsw.exe
-    pause
-    popd
-    exit /b 1
-  )
+if not exist "winsw.exe" (
+    echo Downloading service manager...
+    powershell -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; Invoke-WebRequest -Uri 'https://github.com/winsw/winsw/releases/download/v2.12.0/WinSW-x64.exe' -OutFile 'winsw.exe'"
 )
 
-echo Instalando servicio %SERVICE_NAME%...
-"%WINSW_BIN%" install
-if errorlevel 1 (
-  echo ERROR al instalar el servicio.
-  pause
-  popd
-  exit /b 1
-)
+copy /Y "CronVault.xml" "winsw.xml" >nul
 
-echo Iniciando servicio...
-"%WINSW_BIN%" start
-if errorlevel 1 (
-  echo ERROR al iniciar el servicio.
-  pause
-  popd
-  exit /b 1
-)
+echo Registering service...
+.\winsw.exe stop >nul 2>&1
+.\winsw.exe uninstall >nul 2>&1
+.\winsw.exe install
+.\winsw.exe start
 
-echo.
-echo Servicio instalado y arrancado correctamente.
-echo App disponible en %INSTALL_DIR%.
+echo Creating shortcut...
+set SHORTCUT=%USERPROFILE%\Desktop\CronVault.lnk
+powershell -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('%SHORTCUT%');$s.TargetPath='%INSTALL_DIR%\CronVault.exe';$s.WorkingDirectory='%INSTALL_DIR%';$s.Save()"
 
-echo Creando acceso directo en el escritorio...
-set SHORTCUT_PATH=%USERPROFILE%\Desktop\CronVault.lnk
-powershell -NoProfile -Command "$WshShell = New-Object -ComObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%SHORTCUT_PATH%'); $Shortcut.TargetPath = '%INSTALL_DIR%\\cronvault.exe'; $Shortcut.WorkingDirectory = '%INSTALL_DIR%'; $Shortcut.IconLocation = '%INSTALL_DIR%\\cronvault.ico'; $Shortcut.Save()"
-
-echo Acceso directo creado en %SHORTCUT_PATH%.
+echo Done!
 pause
 popd
-endlocal

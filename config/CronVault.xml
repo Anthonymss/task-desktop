@@ -2,8 +2,7 @@
   <id>CronVault</id>
   <name>CronVault</name>
   <description>CronVault scheduler service</description>
-  <executable>cronvault.exe</executable>
-  <arguments>--service</arguments>
+  <executable>CronVaultService.exe</executable>
   <logpath>logs</logpath>
   <log mode="roll" />
   <onfailure action="restart" delay="5000" />

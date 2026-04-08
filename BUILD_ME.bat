@@ -50,8 +50,9 @@ echo [4/4] Creando carpeta de distribucion...
 REM Crear carpeta de output
 mkdir "!OUTPUT_DIR!" 2>nul
 
-REM Copiar .exe
-copy /Y "dist\cronvault.exe" "!OUTPUT_DIR!\" >nul
+REM Copiar .exes
+copy /Y "dist\CronVault.exe" "!OUTPUT_DIR!\" >nul
+copy /Y "dist\CronVaultService.exe" "!OUTPUT_DIR!\" >nul
 if errorlevel 1 goto error_copy
 
 REM Copiar config y scripts de instalacion
@@ -60,7 +61,11 @@ copy /Y "config\uninstall_service.bat" "!OUTPUT_DIR!\" >nul
 copy /Y "config\CronVault.xml" "!OUTPUT_DIR!\" >nul
 
 REM Copiar icono
-copy /Y "resources\cronvault.ico" "!OUTPUT_DIR!\" >nul
+if exist "resources\cronvault.ico" (
+    copy /Y "resources\cronvault.ico" "!OUTPUT_DIR!\CronVault.ico" >nul
+) else if exist "resources\CronVault.ico" (
+    copy /Y "resources\CronVault.ico" "!OUTPUT_DIR!\CronVault.ico" >nul
+)
 
 REM Copiar documentacion
 copy /Y "README.md" "!OUTPUT_DIR!\README.txt" >nul
@@ -96,7 +101,8 @@ echo ====== Compilacion y Distribucion Exitosa ======
 echo.
 echo Carpeta generada: !OUTPUT_DIR!\
 echo Contiene:
-echo   - cronvault.exe (Programa principal)
+echo   - CronVault.exe (Interfaz de configuracion)
+echo   - CronVaultService.exe (Servicio en segundo plano)
 echo   - install_service.bat (Instalador)
 echo   - uninstall_service.bat (Desinstalador)
 echo   - CronVault.xml (Configuracion)
@@ -108,8 +114,15 @@ echo Siguiente paso: Copia la carpeta !OUTPUT_DIR! donde quieras
 echo e instala ejecutando install_service.bat como Administrador
 echo.
 
-echo Limpiando archivos temporales...
-call CLEAN.bat
+echo Limpiando archivos temporales y temporales de Python...
+
+REM Remove build directories
+if exist "dist" rmdir /s /q "dist" 2>nul
+if exist "build" rmdir /s /q "build" 2>nul
+
+REM Remove Python cache
+for /d /r . %%d in (__pycache__) do @if exist "%%d" rmdir /s /q "%%d" 2>nul
+for /r . %%f in (*.pyc) do @if exist "%%f" del /q "%%f" 2>nul
 
 pause
 
