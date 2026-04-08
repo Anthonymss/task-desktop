@@ -495,9 +495,6 @@ class App(QWidget):
             btn_play.setFixedSize(30, 26)
             btn_play.setStyleSheet(style_btn)
             btn_play.clicked.connect(lambda checked=False, id=jid, name=jname: self._trigger_job_action(id, name, "start"))
-            if status == "RUNNING":
-                btn_play.setEnabled(False)
-                btn_play.setToolTip("Ya está en ejecución")
             
             btn_stop = QPushButton(" ⏹ ")
             btn_stop.setToolTip("Detiene el job si está en ejecución")
@@ -611,6 +608,11 @@ class App(QWidget):
 
     def _trigger_job_action(self, job_id, job_name, action):
         if action == "start":
+            rows = core.db_read("SELECT status FROM logs WHERE job_id = ? ORDER BY id DESC LIMIT 1", (job_id,))
+            if rows and rows[0]["status"] == "RUNNING":
+                self.show_toast(f"ℹ️ El job '{job_name}' ya se está ejecutando.")
+                return
+                
             core.db_write("UPDATE jobs SET trigger_start = 1 WHERE id=?", (job_id,))
             self.show_toast(f"▶ {job_name} se iniciará en breve en 2do plano.")
         elif action == "stop":
